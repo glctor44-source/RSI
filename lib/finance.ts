@@ -1,18 +1,90 @@
-import { createRequire } from "node:module";
 import { MarketRow, WatchItem } from "@/lib/types";
 import { calculateRsiWilder, round2 } from "@/lib/rsi";
 
-// Use CJS entry to avoid bundling ESM test-only modules on Vercel build.
-const require = createRequire(import.meta.url);
-const yahooFinance = require("yahoo-finance2").default;
-
-const HISTORICAL_DAYS = 420;
+type YahooChartResponse = {
+  chart?: {
+    error?: { description?: string } | null;
+    result?: Array<{
+      timestamp?: number[];
+      meta?: {
+        regularMarketPrice?: number;
+        previousClose?: number;
+      };
+      indicators?: {
+        quote?: Array<{
+          close?: Array<number | null>;
+          volume?: Array<number | null>;
+        }>;
+      };
+    }>;
+  };
+};
 
 type QuotePoint = {
-  close?: number;
-  volume?: number;
-  date?: Date;
+  date: Date;
+  close: number;
+  volume: number | null;
 };
+
+async function fetchHistory(ticker: string): Promise<{
+  points: QuotePoint[];
+  regularMarketPrice: number | null;
+  previousClose: number | null;
+}> {
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`);
+  url.searchParams.set("interval", "1d");
+  url.searchParams.set("range", "2y");
+  url.searchParams.set("includePrePost", "false");
+  url.searchParams.set("events", "div,splits");
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      "User-Agent": "Mozilla/5.0"
+    },
+    next: { revalidate: 300 }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Yahoo 요청 실패 (${response.status})`);
+  }
+
+  const json = (await response.json()) as YahooChartResponse;
+  const result = json.chart?.result?.[0];
+  const apiError = json.chart?.error?.description;
+
+  if (apiError) {
+    throw new Error(apiError);
+  }
+  if (!result) {
+    throw new Error("차트 데이터를 찾지 못했습니다.");
+  }
+
+  const timestamps = result.timestamp ?? [];
+  const quote = result.indicators?.quote?.[0];
+  const closes = quote?.close ?? [];
+  const volumes = quote?.volume ?? [];
+
+  const points: QuotePoint[] = [];
+  for (let i = 0; i < timestamps.length; i += 1) {
+    const close = closes[i];
+    if (typeof close !== "number" || Number.isNaN(close)) {
+      continue;
+    }
+
+    points.push({
+      date: new Date(timestamps[i] * 1000),
+      close,
+      volume: typeof volumes[i] === "number" ? volumes[i] : null
+    });
+  }
+
+  return {
+    points,
+    regularMarketPrice:
+      typeof result.meta?.regularMarketPrice === "number" ? result.meta.regularMarketPrice : null,
+    previousClose: typeof result.meta?.previousClose === "number" ? result.meta.previousClose : null
+  };
+}
 
 function find1yClose(points: QuotePoint[]): number | null {
   if (points.length === 0) {
@@ -24,9 +96,6 @@ function find1yClose(points: QuotePoint[]): number | null {
   let minDiff = Number.POSITIVE_INFINITY;
 
   for (const point of points) {
-    if (typeof point.close !== "number" || !point.date) {
-      continue;
-    }
     const diff = Math.abs(point.date.getTime() - oneYearAgo);
     if (diff < minDiff) {
       minDiff = diff;
@@ -34,7 +103,7 @@ function find1yClose(points: QuotePoint[]): number | null {
     }
   }
 
-  return typeof candidate?.close === "number" ? candidate.close : null;
+  return candidate ? candidate.close : null;
 }
 
 export async function buildMarketRow(watchItem: WatchItem): Promise<MarketRow> {
@@ -52,23 +121,17 @@ export async function buildMarketRow(watchItem: WatchItem): Promise<MarketRow> {
   };
 
   try {
-    const period1 = new Date(Date.now() - HISTORICAL_DAYS * 24 * 60 * 60 * 1000);
-
-    const [quote, historical] = await Promise.all([
-      yahooFinance.quote(watchItem.ticker),
-      yahooFinance.historical(watchItem.ticker, { period1, interval: "1d" })
-    ]);
-
-    const points = (historical || []) as QuotePoint[];
-    const closes = points.map((p) => p.close).filter((v): v is number => typeof v === "number");
+    const { points, regularMarketPrice, previousClose } = await fetchHistory(watchItem.ticker);
+    const closes = points.map((p) => p.close);
 
     const rsi14 = closes.length >= 200 ? calculateRsiWilder(closes, 14) : null;
     const latestClose = closes.at(-1) ?? null;
-    const currentPrice = typeof quote.regularMarketPrice === "number" ? quote.regularMarketPrice : latestClose;
-    const prevClose = typeof quote.regularMarketPreviousClose === "number" ? quote.regularMarketPreviousClose : null;
+    const currentPrice = regularMarketPrice ?? latestClose;
 
     const changePct1d =
-      currentPrice && prevClose && prevClose !== 0 ? round2(((currentPrice - prevClose) / prevClose) * 100) : null;
+      currentPrice && previousClose && previousClose !== 0
+        ? round2(((currentPrice - previousClose) / previousClose) * 100)
+        : null;
 
     const price1yAgo = find1yClose(points);
     const return1yPct =
@@ -89,7 +152,7 @@ export async function buildMarketRow(watchItem: WatchItem): Promise<MarketRow> {
       changePct1d,
       price1yAgo: typeof price1yAgo === "number" ? round2(price1yAgo) : null,
       return1yPct,
-      volume: typeof quote.regularMarketVolume === "number" ? quote.regularMarketVolume : points.at(-1)?.volume ?? null,
+      volume: points.at(-1)?.volume ?? null,
       status: hasPartialGap ? "PARTIAL" : "OK"
     };
   } catch (error) {

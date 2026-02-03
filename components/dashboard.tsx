@@ -54,7 +54,7 @@ export function Dashboard() {
 
   async function refreshMarketData(items: WatchItem[]) {
     if (items.length === 0) {
-      setRows([]);
+      setMarketRows([]);
       return;
     }
 

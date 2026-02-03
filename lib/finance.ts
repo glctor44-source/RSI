@@ -1,6 +1,10 @@
-import yahooFinance from "yahoo-finance2";
+import { createRequire } from "node:module";
 import { MarketRow, WatchItem } from "@/lib/types";
 import { calculateRsiWilder, round2 } from "@/lib/rsi";
+
+// Use CJS entry to avoid bundling ESM test-only modules on Vercel build.
+const require = createRequire(import.meta.url);
+const yahooFinance = require("yahoo-finance2").default;
 
 const HISTORICAL_DAYS = 420;
 

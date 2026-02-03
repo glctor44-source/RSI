@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 20% 0%, #d5efe9, #f7f7f2 35%, #f1f3ea 100%);
+  color: #1c1f1a;
+  font-family: "IBM Plex Sans", "Noto Sans KR", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+input,
+button,
+select {
+  font: inherit;
+}

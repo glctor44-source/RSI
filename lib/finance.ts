@@ -1,4 +1,4 @@
-import { MarketRow, WatchItem } from "@/lib/types";
+import { MarketRow, PriceHistoryPoint, WatchItem } from "@/lib/types";
 import { calculateRsiWilder, round2 } from "@/lib/rsi";
 
 type YahooChartResponse = {
@@ -20,17 +20,13 @@ type YahooChartResponse = {
   };
 };
 
-type QuotePoint = {
-  date: Date;
-  close: number;
-  volume: number | null;
-};
-
-async function fetchHistory(ticker: string): Promise<{
-  points: QuotePoint[];
+type HistorySnapshot = {
+  points: PriceHistoryPoint[];
   regularMarketPrice: number | null;
   previousClose: number | null;
-}> {
+};
+
+async function fetchHistorySnapshot(ticker: string): Promise<HistorySnapshot> {
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}`);
   url.searchParams.set("interval", "1d");
   url.searchParams.set("range", "2y");
@@ -64,7 +60,7 @@ async function fetchHistory(ticker: string): Promise<{
   const closes = quote?.close ?? [];
   const volumes = quote?.volume ?? [];
 
-  const points: QuotePoint[] = [];
+  const points: PriceHistoryPoint[] = [];
   for (let i = 0; i < timestamps.length; i += 1) {
     const close = closes[i];
     if (typeof close !== "number" || Number.isNaN(close)) {
@@ -72,7 +68,7 @@ async function fetchHistory(ticker: string): Promise<{
     }
 
     points.push({
-      date: new Date(timestamps[i] * 1000),
+      dateISO: new Date(timestamps[i] * 1000).toISOString(),
       close,
       volume: typeof volumes[i] === "number" ? volumes[i] : null
     });
@@ -86,17 +82,22 @@ async function fetchHistory(ticker: string): Promise<{
   };
 }
 
-function find1yClose(points: QuotePoint[]): number | null {
+export async function fetchPriceHistory(ticker: string): Promise<PriceHistoryPoint[]> {
+  const { points } = await fetchHistorySnapshot(ticker);
+  return points;
+}
+
+function find1yClose(points: PriceHistoryPoint[]): number | null {
   if (points.length === 0) {
     return null;
   }
 
   const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-  let candidate: QuotePoint | null = null;
+  let candidate: PriceHistoryPoint | null = null;
   let minDiff = Number.POSITIVE_INFINITY;
 
   for (const point of points) {
-    const diff = Math.abs(point.date.getTime() - oneYearAgo);
+    const diff = Math.abs(new Date(point.dateISO).getTime() - oneYearAgo);
     if (diff < minDiff) {
       minDiff = diff;
       candidate = point;
@@ -121,7 +122,7 @@ export async function buildMarketRow(watchItem: WatchItem): Promise<MarketRow> {
   };
 
   try {
-    const { points, regularMarketPrice, previousClose } = await fetchHistory(watchItem.ticker);
+    const { points, regularMarketPrice, previousClose } = await fetchHistorySnapshot(watchItem.ticker);
     const closes = points.map((p) => p.close);
 
     const rsi14 = closes.length >= 200 ? calculateRsiWilder(closes, 14) : null;
